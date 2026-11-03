@@ -40,7 +40,25 @@ ORTSKUERZEL = {"Ju": "Junkersdorf", "Mü": "Müngersdorf", "Lö": "Lövenich", "
                "Md": "Marsdorf", "Bf": "Braunsfeld", "Li": "Lindenthal", "Wi": "Widdersdorf"}
 
 AUTOBAHNEN = ["A1", "A4"]
-TAGE_ARCHIV = 30          # wie lange gefundene Meldungen sichtbar bleiben
+TAGE_ARCHIV = 10          # wie lange gefundene Meldungen sichtbar bleiben
+TAGE_SCHULEN = 30         # Schul-Nachrichten erscheinen seltener, daher etwas länger
+MONATE_KARNEVAL = 5       # so weit im Voraus werden Karnevalstermine gezeigt
+
+# Schulen mit Nachrichten-Feed (RSS) und weitere Einrichtungen nur als Link
+SCHUL_FEEDS = {
+    "Gymnasium Müngersdorf": "https://www.gymnasium-muengersdorf.de/feed/",
+    "Ildefons-Herwegen-Schule (GGS)": "https://ildefons-herwegen-schule.de/feed/",
+}
+LINKS_VEEDEL = [
+    ("Große Junkersdorfer Karnevals Gesellschaft von 1973", "https://koelnerkarneval.de/detaillierte-informationen/grosse-junkersdorfer-karnevalsgesellschaft-von-1973-ev"),
+    ("GGS Müngersdorf, Wendelinstraße", "https://www.ggs-muengersdorf.de/"),
+    ("GGS Alfons-Nowak-Straße, Junkersdorf", "https://www.alfons-nowak-strasse.de/"),
+    ("Gymnasium Müngersdorf", "https://www.gymnasium-muengersdorf.de/"),
+    ("Ildefons-Herwegen-Schule, Junkersdorf", "https://ildefons-herwegen-schule.de/"),
+    ("Ernst-Simons-Realschule, Müngersdorf", "https://www.ernst-simons-realschule.de/"),
+]
+MONATE = {m: i for i, m in enumerate(["januar", "februar", "märz", "april", "mai", "juni", "juli", "august",
+                                       "september", "oktober", "november", "dezember"], 1)}
 BASIS = Path(__file__).resolve().parent
 AUSGABE = BASIS / "public"
 ARCHIV = BASIS / "data" / "meldungen.json"
@@ -184,11 +202,34 @@ def stadion():
     return [t for t in termine if t["bis"] >= HEUTE]
 
 
+def daten_im_text(s):
+    """Alle Datumsangaben wie '3. November 2026', '17.11.26' oder '08.11.2026' als date."""
+    tage = []
+    for t, m, j in re.findall(r"(\d{1,2})\.\s*([A-Za-zäÄ]+)\s+(\d{4})", s):
+        if m.lower() in MONATE:
+            tage.append((int(j), MONATE[m.lower()], int(t)))
+    for t, m, j in re.findall(r"\b(\d{1,2})\.(\d{1,2})\.(\d{2,4})\b", s):
+        tage.append((int(j) + (2000 if len(j) == 2 else 0), int(m), int(t)))
+    out = []
+    for j, m, t in tage:
+        try:
+            out.append(dt.date(j, m, t))
+        except ValueError:
+            pass
+    return out
+
+
+def abgelaufen(s):
+    """True, wenn der Text Daten nennt und das späteste davon schon vorbei ist."""
+    d = daten_im_text(s)
+    return bool(d) and max(d) < HEUTE
+
+
 def verkehrskalender():
     out = []
     for it in rss_items(laden(QUELLEN["verkehrskalender"])):
         w = treffer(it["titel"] + " " + it["text"])
-        if w:
+        if w and not abgelaufen(it["text"]):
             it["treffer"] = w
             out.append(it)
     return out
@@ -248,6 +289,8 @@ def autobahn():
                 if km(MITTE, pos) > RADIUS_AUTOBAHN_KM:
                     continue
                 beschr = " ".join(x.get("description", []))
+                if art != "Verkehrsmeldung" and abgelaufen(beschr):
+                    continue  # Baustelle/Sperrung ist laut Beschreibung schon vorbei
                 zeitraum = re.search(r"(?:gültig:|Bauphase:|Beginn:)\s*(.*?)(?:\s{2}|$)", beschr)
                 zeilen = [z.strip() for z in x.get("description", [])]
                 ort = next((z for z in zeilen if z.startswith(("Auffahrt", "Abfahrt"))), "")
@@ -287,6 +330,57 @@ def pressemeldungen(feed, quelle):
                     "datum": it["datum"].isoformat() if it["datum"] else JETZT.isoformat(),
                     "anriss": kurz(absatz), "treffer": w})
     return neu
+
+
+def karneval():
+    """Sessionskalender des Festkomitees: Monat für Monat, nur Termine aus dem Veedel."""
+    basis = "https://koelnerkarneval.de"
+    seite = laden(basis + "/session/veranstaltungen")
+    out, gesehen = [], set()
+    for _ in range(MONATE_KARNEVAL):
+        for karte in seite.split('<div class="card border-0">')[1:]:
+            datum = re.search(r"(\d{2})\.(\d{2})\.(\d{4})", karte)
+            titel = re.search(r"<h5[^>]*>(.*?)</h5>", karte, re.S)
+            if not (datum and titel):
+                continue
+            tag = dt.date(int(datum.group(3)), int(datum.group(2)), int(datum.group(1)))
+            beschr = re.search(r'itemprop="description">(.*?)</div>', karte, re.S)
+            beschr = text(beschr.group(1)) if beschr else ""
+            if tag < HEUTE or not treffer(text(titel.group(1)) + " " + beschr):
+                continue
+            uhr = re.search(r"fa-clock\"></i>\s*(\d{1,2}:\d{2})", karte)
+            link = re.search(r'href="(/session/veranstaltungen/veranstaltung/[^"]+)"', karte)
+            schluessel = (tag, text(titel.group(1)))
+            if schluessel in gesehen:
+                continue
+            gesehen.add(schluessel)
+            out.append({"tag": tag, "uhr": uhr.group(1) if uhr else "", "titel": text(titel.group(1)),
+                        "text": beschr, "link": basis + link.group(1) if link else basis + "/session/veranstaltungen"})
+        # Link zum nächsten Monat suchen (der mit dem spätesten Monat auf der Seite)
+        monate = []
+        for l in re.findall(r'href="(/session/veranstaltungen\?[^"]*action%5D=month[^"]*)"', seite):
+            m = re.search(r"month%5D=(\d+).*?year%5D=(\d+)", l)
+            if m:
+                monate.append((int(m.group(2)) * 12 + int(m.group(1)), html.unescape(l)))
+        if not monate:
+            break
+        seite = laden(basis + max(monate)[1])
+    return sorted(out, key=lambda k: (k["tag"], k["uhr"]))
+
+
+def schulen():
+    out = []
+    for name, url in SCHUL_FEEDS.items():
+        try:
+            items = rss_items(laden(url))
+        except Exception as ex:
+            print(f"!! Schule {name}: {ex}")
+            continue
+        for it in items[:3]:
+            if it["datum"] and it["datum"].date() >= HEUTE - dt.timedelta(days=TAGE_SCHULEN):
+                out.append({"quelle": name, "titel": it["titel"], "link": it["link"],
+                            "datum": it["datum"], "anriss": kurz(it["text"], 200)})
+    return sorted(out, key=lambda m: m["datum"], reverse=True)
 
 
 def wetter():
@@ -429,13 +523,37 @@ def baustellen_html(bs):
     return f'<p class="klein">Genehmigte Arbeiten im Umkreis von {RADIUS_BAUSTELLEN_KM} km, sortiert nach Nähe zur Mitte des Veedels, die laufen oder in den nächsten 14 Tagen beginnen. Ein Klick auf die Adresse zeigt die Stelle auf der Karte.</p><ul class="liste spalten">{"".join(z)}</ul>{rest}' if z else ""
 
 
+def alter(d):
+    tage = (HEUTE - d).days
+    return "heute" if tage == 0 else "gestern" if tage == 1 else f"vor {tage} Tagen"
+
+
 def meldungen_html(liste):
     z = []
     for m in liste:
         d = dt.datetime.fromisoformat(m["datum"]).astimezone(TZ)
-        z.append(f"""<li><div class="klein">{datum_de(d.date())} · {e(m['quelle'])} · erwähnt: {e(', '.join(m['treffer']))}</div>
+        z.append(f"""<li><div class="klein">{datum_de(d.date())} ({alter(d.date())}) · {e(m['quelle'])} · erwähnt: {e(', '.join(m['treffer']))}</div>
 <a href="{e(m['link'])}"><strong>{e(m['titel'])}</strong></a><span>{e(m['anriss'])}</span></li>""")
     return f'<ul class="liste">{"".join(z)}</ul>' if z else ""
+
+
+def karneval_html(liste):
+    z = []
+    for k in liste[:12]:
+        uhr = f" · {k['uhr']} Uhr" if k["uhr"] else ""
+        z.append(f"""<li><div class="datum">{datum_de(k['tag'])}</div><div><a href="{e(k['link'])}"><strong>{e(k['titel'])}</strong></a>
+<span class="klein">{e(k['text'])}{uhr}</span></div></li>""")
+    return f'<ul class="liste termine">{"".join(z)}</ul>' if z else ""
+
+
+def schulen_html(liste):
+    z = []
+    for m in liste:
+        z.append(f"""<li><div class="klein">{datum_de(m['datum'].date())} ({alter(m['datum'].date())}) · {e(m['quelle'])}</div>
+<a href="{e(m['link'])}"><strong>{e(m['titel'])}</strong></a>{f"<span>{e(m['anriss'])}</span>" if m['anriss'] else ""}</li>""")
+    neu = f'<ul class="liste">{"".join(z)}</ul>' if z else f'<p class="leer">In den letzten {TAGE_SCHULEN} Tagen keine neuen Beiträge.</p>'
+    links = " · ".join(f'<a href="{e(u)}">{e(n)}</a>' for n, u in LINKS_VEEDEL)
+    return neu + f'<h3>Schulen und Vereine im Veedel</h3><p class="klein">{links}</p>'
 
 
 def wetter_html(w):
@@ -481,6 +599,7 @@ li.warn .etikett{color:var(--warn)} li.sperr .etikett{color:var(--akzent)} .etik
 .leer{color:var(--leise);font-style:italic}
 .knopf{display:inline-block;background:var(--akzent);color:#fff;text-decoration:none;padding:8px 14px;border-radius:10px;font-weight:600}
 footer{color:var(--leise);font-size:.85rem;padding:10px 0 30px}
+#veraltet{display:none;background:var(--warn-hell);color:var(--warn);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-weight:600}
 @media (max-width:560px){.liste.termine li{flex-direction:column;gap:2px}.wrap{padding:12px 16px}}
 """
 
@@ -496,7 +615,12 @@ def seite(titel, inhalt):
 <footer>Diese Seite wird stündlich automatisch aus öffentlichen Quellen zusammengestellt, ohne redaktionelle Prüfung und ohne Gewähr.
 Maßgeblich sind immer die verlinkten Originalquellen. Keine Cookies, kein Tracking.<br>
 <a href="impressum.html">Impressum</a> · <a href="datenschutz.html">Datenschutz</a> · <a href="index.html">Startseite</a></footer>
-</div></body></html>"""
+</div>
+<script>
+// Warnung, falls die automatische Aktualisierung ausgefallen ist (Stand älter als 3 Stunden)
+(function(){{var stand={int(JETZT.timestamp() * 1000)},el=document.getElementById("veraltet");
+if(el&&Date.now()-stand>3*3600*1000){{el.style.display="block";}}}})();
+</script></body></html>"""
 
 
 # ---------------------------------------------------------------- Ablauf
@@ -519,10 +643,13 @@ def main():
     neue = (versuche("Polizei", pressemeldungen, "polizei", "Polizei Köln") or []) + \
            (versuche("Stadt", pressemeldungen, "stadt_presse", "Stadt Köln") or [])
     meldungen = archiv_aktualisieren(neue)
+    kk = versuche("Karneval", karneval)
+    sch = versuche("Schulen", schulen)
 
     kopf = f"""<header><h1>{TITEL}</h1><span class="stand">Stand: {datum_de(HEUTE)}, {JETZT:%H:%M} Uhr</span></header>
+<div id="veraltet">⚠️ Diese Seite wurde seit mehreren Stunden nicht aktualisiert. Die Angaben können veraltet sein.</div>
 {wetter_html(w)}
-<nav><a href="#stadion">🏟️ Stadion</a><a href="#verkehr">🚗 Verkehr</a><a href="#baustellen">🚧 Baustellen</a><a href="#meldungen">📰 Meldungen</a></nav>"""
+<nav><a href="#stadion">🏟️ Stadion</a><a href="#verkehr">🚗 Verkehr</a><a href="#baustellen">🚧 Baustellen</a><a href="#veedel">🎭 Karneval &amp; Vereine</a><a href="#meldungen">📰 Meldungen</a><a href="#schulen">🏫 Schulen</a></nav>"""
 
     teile = [kopf, banner_html(termine or [])]
     teile.append(abschnitt("stadion", "Termine im RheinEnergieSTADION",
@@ -535,11 +662,19 @@ def main():
                            baustellen_html(bs) if bs is not None else fehler_html("Das Baustellen-Verzeichnis"),
                            '<a href="https://www.offenedaten-koeln.de/dataset/baustellen-koeln">Stadt Köln, Offene Daten</a> '
                            '(Datenlizenz Deutschland – Namensnennung – Version 2.0)'))
+    teile.append(abschnitt("veedel", "Karneval &amp; Vereine im Veedel",
+                           karneval_html(kk) if kk is not None else fehler_html("Der Karnevalskalender"),
+                           '<a href="https://koelnerkarneval.de/session/veranstaltungen">Sessionskalender Festkomitee Kölner Karneval</a>. '
+                           f'Gezeigt werden kommende Termine der nächsten {MONATE_KARNEVAL} Monate, die Junkersdorf oder Müngersdorf betreffen.',
+                           leer="Zurzeit keine Termine aus dem Veedel im Sessionskalender."))
     teile.append(abschnitt("meldungen", "Meldungen aus dem Veedel", meldungen_html(meldungen),
                            '<a href="https://www.presseportal.de/blaulicht/nr/12415">Polizei Köln (Presseportal)</a>, '
                            '<a href="https://www.stadt-koeln.de/politik-und-verwaltung/presseservice/">Presseservice Stadt Köln</a>. '
                            f'Gezeigt werden Meldungen der letzten {TAGE_ARCHIV} Tage, die einen Ort aus dem Veedel nennen.',
                            leer=f"In den letzten {TAGE_ARCHIV} Tagen gab es keine Meldung, die das Veedel erwähnt."))
+    teile.append(abschnitt("schulen", "Aus den Schulen", schulen_html(sch or []),
+                           "Nachrichten-Feeds von " + ", ".join(SCHUL_FEEDS) +
+                           f" (Beiträge der letzten {TAGE_SCHULEN} Tage). Die anderen Schulen bieten keinen Feed an."))
 
     AUSGABE.mkdir(exist_ok=True)
     (AUSGABE / "index.html").write_text(seite(TITEL, "\n".join(teile)), "utf-8")
@@ -550,7 +685,7 @@ def main():
         if quelle.exists():
             (AUSGABE / f"{name}.html").write_text(seite(name.capitalize() + " – " + TITEL, quelle.read_text("utf-8")), "utf-8")
     (AUSGABE / ".nojekyll").write_text("")
-    print(f"OK: {len(termine or [])} Termine, {len(vk or [])} Stadtverkehr, {len(ab or [])} Autobahn, "
+    print(f"OK: {len(termine or [])} Termine, {len(kk or [])} Karneval, {len(sch or [])} Schule, {len(vk or [])} Stadtverkehr, {len(ab or [])} Autobahn, "
           f"{len(bs or [])} Baustellen, {len(meldungen)} Meldungen")
 
 
