@@ -685,6 +685,10 @@ def main():
         if quelle.exists():
             (AUSGABE / f"{name}.html").write_text(seite(name.capitalize() + " – " + TITEL, quelle.read_text("utf-8")), "utf-8")
     (AUSGABE / ".nojekyll").write_text("")
+    # Ändert sich einmal im Monat -> der Bot speichert etwas, und GitHub pausiert
+    # den Zeitplan nicht (Pause nach 60 Tagen ohne Aktivität im Repository).
+    (BASIS / "data").mkdir(exist_ok=True)
+    (BASIS / "data" / "lebenszeichen.txt").write_text(f"{HEUTE:%Y-%m}\n", "utf-8")
     print(f"OK: {len(termine or [])} Termine, {len(kk or [])} Karneval, {len(sch or [])} Schule, {len(vk or [])} Stadtverkehr, {len(ab or [])} Autobahn, "
           f"{len(bs or [])} Baustellen, {len(meldungen)} Meldungen")
 
