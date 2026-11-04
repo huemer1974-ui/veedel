@@ -63,6 +63,13 @@ LINKS_VEEDEL = [
 HOHENLIND_ID = "00ES8GN91400003BVV0AG08LVUPGND5I"      # Vereins-ID bei fussball.de
 HOHENLIND_ERSTE = "SC Bor. Lindenthal-Hohenlind"        # so heißt die 1. Mannschaft dort
 HOHENLIND_URL = "https://www.fussball.de/verein/sc-bor-lindenthal-hohenlind-mittelrhein/-/id/" + HOHENLIND_ID
+FUPA = "https://api.fupa.net/v1"
+HOHENLIND_FUPA = "sc-borussia-lindenthal-hohenlind-m1"   # 1. Mannschaft bei FuPa (ohne Saison)
+# Jugendmannschaften: (Anzeigename, FuPa-Kürzel ohne Saison, Vereins-Kürzel)
+JUGEND = [
+    ("Borussia Hohenlind U14", "sc-borussia-lindenthal-hohenlind-u14-1", "sc-borussia-lindenthal-hohenlind"),
+    ("SV Lövenich/Widdersdorf U17 (B1)", "sv-loevenichwiddersdorf-198627-u17-1", "sv-loevenichwiddersdorf-198627"),
+]
 WOCHEN_SPORT = 8          # so weit im Voraus werden Spiele und Termine gezeigt
 TAGE_VEREINE = 45         # Vereinsnachrichten erscheinen selten, daher länger sichtbar
 VEREIN_FEEDS = {
@@ -404,7 +411,65 @@ def schulen():
     return sorted(out, key=lambda m: m["datum"], reverse=True)
 
 
+def saison():
+    """Saison-Kürzel wie bei FuPa, z. B. 2026-27 (neue Saison ab Juli)."""
+    j = HEUTE.year if HEUTE.month >= 7 else HEUTE.year - 1
+    return f"{j}-{(j + 1) % 100:02d}"
+
+
+def fupa_spiele(team):
+    spiele = json.loads(laden(f"{FUPA}/teams/{team}-{saison()}/matches?flavor=current&limit=60"))
+    for m in spiele:
+        m["zeit"] = dt.datetime.fromisoformat(m["kickoff"]).astimezone(TZ)
+    return sorted(spiele, key=lambda m: m["zeit"])
+
+
 def hohenlind():
+    """Erst FuPa, bei einem Fehler ersatzweise fussball.de."""
+    try:
+        return hohenlind_fupa()
+    except Exception as ex:
+        print(f"!! Hohenlind über FuPa: {ex} – nehme fussball.de")
+        return hohenlind_fussballde()
+
+
+def hohenlind_fupa():
+    bis = HEUTE + dt.timedelta(weeks=WOCHEN_SPORT)
+    out = []
+    for m in fupa_spiele(HOHENLIND_FUPA):
+        heim = m["homeTeam"]["slug"].startswith(HOHENLIND_FUPA)
+        if not heim or m["section"] != "PRE" or not HEUTE <= m["zeit"].date() <= bis:
+            continue
+        out.append({"tag": m["zeit"].date(), "uhr": f"{m['zeit']:%H:%M}", "liga": m["competition"]["name"],
+                    "gegner": m["awayTeam"]["name"]["full"], "ort": "Westkampfbahn", "ausfall": "",
+                    "link": f"https://www.fupa.net/match/{m['slug']}"})
+    return out
+
+
+def jugend():
+    out = []
+    for name, team, verein in JUGEND:
+        try:
+            info = json.loads(laden(f"{FUPA}/teams/{team}-{saison()}"))
+            spiele = fupa_spiele(team)
+            c = info["competition"]
+            tab = json.loads(laden(f"{FUPA}/standings?competition={c['slug']}&season={c['season']['slug']}"))["standings"]
+        except Exception as ex:
+            print(f"!! Jugend {name}: {ex}")
+            out.append({"name": name, "fehler": True})
+            continue
+        gespielt = [m for m in spiele if m["section"] == "POST"]
+        out.append({"name": name, "fehler": False, "liga": c["name"], "team": team,
+                    "link": f"https://www.fupa.net/team/{team}-{saison()}",
+                    "naechste": [m for m in spiele if m["section"] == "PRE" and m["zeit"].date() >= HEUTE][:2],
+                    "letztes": gespielt[-1] if gespielt else None,
+                    "tabelle": [{"platz": t["rank"], "team": t["team"]["name"]["full"], "spiele": t["matches"],
+                                 "tore": f"{t['ownGoals']}:{t['againstGoals']}", "punkte": t["points"],
+                                 "eigen": t["team"].get("clubSlug") == verein} for t in tab]})
+    return out
+
+
+def hohenlind_fussballde():
     """Heimspiele der 1. Mannschaft von Borussia Hohenlind (Westkampfbahn) aus dem Vereinsspielplan von fussball.de."""
     bis = HEUTE + dt.timedelta(weeks=WOCHEN_SPORT)
     s = laden(f"https://www.fussball.de/ajax.club.matchplan/-/id/{HOHENLIND_ID}/mime-type/HTML/mode/PAGE/"
@@ -815,6 +880,35 @@ def sport_html(hl, sp, ve):
     return t + f'<p class="klein">{links}</p>'
 
 
+def jugend_html(liste):
+    def spiel(m, team, ergebnis=False):
+        heim = m["homeTeam"]["slug"].startswith(team)
+        gegner = e((m["awayTeam"] if heim else m["homeTeam"])["name"]["full"])
+        wann = f"{WOCHENTAG[m['zeit'].weekday()]} {m['zeit']:%d.%m.}"
+        if ergebnis and m.get("homeGoal") is not None:
+            eig, geg = (m["homeGoal"], m["awayGoal"]) if heim else (m["awayGoal"], m["homeGoal"])
+            return f"<strong>{eig}:{geg}</strong> {'gegen' if heim else 'bei'} {gegner} ({wann})"
+        return f"<strong>{wann}, {m['zeit']:%H:%M}</strong> · {'Heim gegen' if heim else 'Auswärts bei'} {gegner}"
+
+    karten = []
+    for t in liste:
+        if t["fehler"]:
+            karten.append(f'<div class="team"><h3>{e(t["name"])}</h3>{fehler_html("FuPa")}</div>')
+            continue
+        eigen = next((r for r in t["tabelle"] if r["eigen"]), None)
+        naechste = "".join(f"<li>{spiel(m, t['team'])}</li>" for m in t["naechste"]) or "<li>Kein Spiel angesetzt</li>"
+        letztes = f'<p class="klein">Zuletzt: {spiel(t["letztes"], t["team"], True)}</p>' if t["letztes"] else ""
+        zeilen = "".join(f'<tr{" class=eigen" if r["eigen"] else ""}><td>{r["platz"]}.</td><td>{e(r["team"])}</td>'
+                         f'<td>{r["spiele"]}</td><td>{r["tore"]}</td><td><strong>{r["punkte"]}</strong></td></tr>'
+                         for r in t["tabelle"])
+        platz = f"Tabelle – Platz {eigen['platz']} von {len(t['tabelle'])}" if eigen else "Tabelle"
+        karten.append(f"""<div class="team"><h3><a href="{e(t['link'])}">{e(t['name'])}</a></h3>
+<div class="klein">{e(t['liga'])}</div>
+<ul class="naechste">{naechste}</ul>{letztes}
+<details><summary>{platz}</summary><table class="tabelle"><tr><th></th><th>Mannschaft</th><th>Sp.</th><th>Tore</th><th>Pkt.</th></tr>{zeilen}</table></details></div>""")
+    return f'<div class="jugend">{"".join(karten)}</div>'
+
+
 def wetter_html(w):
     if not w or w["temp"] is None:
         return ""
@@ -852,6 +946,18 @@ section h3{font-size:1rem;margin:16px 0 6px;color:var(--leise)}
 .zeiten{font-size:.85rem}
 .liste.spalten{columns:2 260px;column-gap:24px}
 .liste.spalten li{break-inside:avoid}
+.jugend{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin:6px 0 4px}
+.team{border:1px solid var(--linie);border-radius:10px;padding:2px 14px 10px}
+.team h3{margin:10px 0 0;font-size:1rem}
+.team h3 a{color:var(--text);text-decoration:none}
+.naechste{margin:6px 0;padding:0;list-style:none;font-size:.9rem}
+.naechste li{padding:2px 0}
+.team p.klein{margin:4px 0}
+table.tabelle{width:100%;border-collapse:collapse;font-size:.82rem;margin-top:6px}
+.tabelle th{text-align:left;color:var(--leise);font-weight:500}
+.tabelle td,.tabelle th{padding:3px 4px;border-top:1px solid var(--linie)}
+.tabelle td:nth-child(n+3),.tabelle th:nth-child(n+3){text-align:right}
+.tabelle tr.eigen td{background:var(--akzent-hell);font-weight:700}
 .liste li.warn{background:var(--warn-hell);margin:0 -10px;padding:10px;border-radius:8px}
 .etikett{display:inline-block;font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.03em;color:var(--leise)}
 li.warn .etikett{color:var(--warn)} li.sperr .etikett{color:var(--akzent)} .etikett.neu{color:var(--ok)}
@@ -926,11 +1032,12 @@ def main():
     hl = versuche("Hohenlind", hohenlind)
     sp = versuche("Sporthochschule", spoho)
     ve = versuche("Vereine", vereine)
+    jg = versuche("Jugendfußball", jugend)
 
     kopf = f"""<header id="oben"><h1>{TITEL}</h1><span class="stand">Stand: {datum_de(HEUTE)}, {JETZT:%H:%M} Uhr</span></header>
 <div id="veraltet">⚠️ Diese Seite wurde seit mehreren Stunden nicht aktualisiert. Die Angaben können veraltet sein.</div>
 {wetter_html(w)}
-<nav><a href="#stadion">🏟️ Stadion</a><a href="#veedel">🎭 Karneval</a><a href="#sport">⚽ Sport</a><a href="#verkehr">🚗 Verkehr &amp; Baustellen</a><a href="#meldungen">📰 Meldungen</a><a href="#schulen">🏫 Schulen</a></nav>"""
+<nav><a href="#stadion">🏟️ Stadion</a><a href="#veedel">🎭 Karneval</a><a href="#sport">⚽ Sport</a><a href="#verkehr">🚗 Verkehr &amp; Baustellen</a><a href="#meldungen">📰 Meldungen</a><a href="#schulen">🏫 Schulen</a><a href="#jugend">🥅 Jugendfußball</a></nav>"""
 
     teile = [kopf, banner_html(termine or [])]
     teile.append(abschnitt("stadion", "Termine im RheinEnergieSTADION",
@@ -942,7 +1049,7 @@ def main():
                            f'Gezeigt werden kommende Termine der nächsten {MONATE_KARNEVAL} Monate, die Junkersdorf oder Müngersdorf betreffen.',
                            leer="Zurzeit keine Termine aus dem Veedel im Sessionskalender."))
     teile.append(abschnitt("sport", "Sport im Veedel", sport_html(hl, sp, ve),
-                           f'<a href="{HOHENLIND_URL}">fussball.de</a> (Spielplan), '
+                           f'<a href="https://www.fupa.net/team/{HOHENLIND_FUPA}-{saison()}">FuPa</a> bzw. <a href="{HOHENLIND_URL}">fussball.de</a> (Spielplan), '
                            f'<a href="{SPOHO_TERMINE}">Deutsche Sporthochschule Köln</a>, Nachrichten-Feed des FC Junkersdorf. '
                            f'Gezeigt werden die nächsten {WOCHEN_SPORT} Wochen.'))
     teile.append(abschnitt("verkehr", "Verkehr in und ums Veedel",
@@ -960,6 +1067,9 @@ def main():
     teile.append(abschnitt("schulen", "Aus den Schulen", schulen_html(sch or []),
                            "Nachrichten-Feeds von " + ", ".join(SCHUL_FEEDS) +
                            f" (Beiträge der letzten {TAGE_SCHULEN} Tage). Die anderen Schulen bieten keinen Feed an."))
+
+    teile.append(abschnitt("jugend", "Jugendfußball", jugend_html(jg or []),
+                           '<a href="https://www.fupa.net">FuPa</a> – nächste Spiele, letztes Ergebnis und Tabelle.'))
 
     AUSGABE.mkdir(exist_ok=True)
     (AUSGABE / "index.html").write_text(seite(TITEL, "\n".join(teile)), "utf-8")
