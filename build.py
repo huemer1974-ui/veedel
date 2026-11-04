@@ -453,6 +453,7 @@ def abschnitt(id_, titel, inhalt, quelle_html, leer="Zurzeit keine Meldungen."):
   <h2>{titel}</h2>
   {inhalt or f'<p class="leer">{leer}</p>'}
   <p class="quelle">Quelle: {quelle_html}</p>
+  <p class="nach-oben"><a href="#oben">↑ nach oben</a></p>
 </section>"""
 
 
@@ -500,20 +501,29 @@ def stadion_html(termine):
 
 def verkehr_html(vk, ab):
     teile = []
-    for it in vk:
-        teile.append(f"""<li><strong>{e(it['titel'])}</strong><span>{e(kurz(it['text'], 320))}</span>
+    for it in vk or []:
+        teile.append(f"""<li><strong>{e(it['titel'])}</strong><span>{e(kurz(it['text'], 260))}</span>
 {f'<a href="{e(it["link"])}">Details bei der Stadt Köln</a>' if it['link'].count('/') > 3 else ''}</li>""")
-    stadt = f'<h3>Stadtstraßen</h3><ul class="liste">{"".join(teile)}</ul>' if teile else '<h3>Stadtstraßen</h3><p class="leer">Keine Meldungen für das Veedel im Verkehrskalender.</p>'
-    if ab is None:
-        bahn = "<h3>Autobahn A1 / A4</h3>" + fehler_html("Die Autobahn GmbH")
+    if vk is None:
+        stadt = "<h3>Stadtstraßen</h3>" + fehler_html("Der Verkehrskalender")
     else:
-        z = []
-        for x in ab:
-            klasse = "warn" if x["art"] == "Verkehrsmeldung" else ("sperr" if x["sperrung"] else "")
-            z.append(f"""<li class="{klasse}"><span class="etikett">{x['art']}</span> <strong>{e(x['titel'])}</strong>
-<span>{e(x['richtung'])}</span><span class="klein">{e(x['zeit'])}</span></li>""")
-        bahn = f'<h3>Autobahn A1 / A4 (Umkreis {RADIUS_AUTOBAHN_KM:.0f} km)</h3>' + (
-            f'<ul class="liste">{"".join(z)}</ul>' if z else '<p class="leer">Keine Meldungen.</p>')
+        stadt = "<h3>Stadtstraßen</h3>" + (f'<ul class="liste kompakt">{"".join(teile)}</ul>' if teile
+                                            else '<p class="leer klein">Keine Meldungen für das Veedel im Verkehrskalender.</p>')
+    if ab is None:
+        return stadt + "<h3>Autobahn A1 / A4</h3>" + fehler_html("Die Autobahn GmbH")
+
+    def zeile(x):
+        klasse = "warn" if x["art"] == "Verkehrsmeldung" else ("sperr" if x["sperrung"] else "")
+        return f"""<li class="{klasse}"><span><span class="etikett">{x['art']}</span> <strong>{e(x['titel'])}</strong> · {e(x['richtung'])}</span>
+<span class="klein">{e(x['zeit'])}</span></li>"""
+    stau = [x for x in ab if x["art"] == "Verkehrsmeldung"]
+    bahn = f"<h3>Autobahn A1 / A4 (Umkreis {RADIUS_AUTOBAHN_KM:.0f} km)</h3>"
+    bahn += f'<ul class="liste kompakt">{"".join(map(zeile, stau))}</ul>' if stau else '<p class="leer klein">Zurzeit kein Stau gemeldet.</p>'
+    for art, titel in [("Sperrung", "Sperrungen"), ("Baustelle", "Baustellen")]:
+        liste = [x for x in ab if x["art"] == art]
+        if liste:
+            bahn += (f'<details><summary>Autobahn-{titel} ({len(liste)}) – auch in der Karte</summary>'
+                     f'<ul class="liste mini">{"".join(map(zeile, liste))}</ul></details>')
     return stadt + bahn
 
 
@@ -609,17 +619,54 @@ if(merken()) zeigen();
 </script>"""
 
 
+WOCHEN_EINZELN = 6   # so viele Wochen werden einzeln gezeigt, danach "später"
+
+
 def baustellen_html(bs):
-    z = []
-    for b in bs[:40]:
-        osm = f"https://www.openstreetmap.org/?mlat={b['lat']:.5f}&mlon={b['lon']:.5f}#map=18/{b['lat']:.5f}/{b['lon']:.5f}"
-        status = "ab " + b["von"].strftime("%d.%m.") if b["von"] > HEUTE else "bis " + b["bis"].strftime("%d.%m.%Y")
-        neu = ' <span class="etikett neu">neu</span>' if b["neu"] else ""
-        ort = f" ({e(b['ort'])})" if b["ort"] else ""
-        z.append(f"""<li><span><a href="{osm}" title="Auf der Karte zeigen">{e(b['adresse'])}</a>{ort}{neu}</span>
-<span class="klein">{e(b['art'])} · {status}</span></li>""")
-    rest = f'<p class="klein">… und {len(bs) - 40} weitere.</p>' if len(bs) > 40 else ""
-    return f'<p class="klein">Genehmigte Arbeiten im Umkreis von {RADIUS_BAUSTELLEN_KM} km, sortiert nach Nähe zur Mitte des Veedels, die laufen oder in den nächsten {VORLAUF_BAUSTELLEN} Tagen beginnen. Ein Klick auf die Adresse zeigt die Stelle auf der Karte.</p><ul class="liste spalten">{"".join(z)}</ul>{rest}' if z else ""
+    """Baustellen nach Wochen gruppiert: kommende nach Beginn, laufende nach Ende."""
+    montag = HEUTE - dt.timedelta(days=HEUTE.weekday())
+
+    def woche(d):
+        return (d - montag).days // 7
+
+    def spanne(n):
+        a = montag + dt.timedelta(weeks=n)
+        return f"{a:%d.%m.}–{a + dt.timedelta(days=6):%d.%m.}"
+
+    gruppen = {}
+    for b in bs:
+        if b["von"] > HEUTE:
+            n = min(woche(b["von"]), WOCHEN_EINZELN)
+            schluessel = (0, n)
+            titel = ("Beginnen diese Woche" if n == 0 else "Beginnen nächste Woche" if n == 1
+                     else f"Beginnen ab {spanne(n)[:6]}" if n == WOCHEN_EINZELN else f"Beginnen {spanne(n)}")
+        else:
+            n = min(woche(b["bis"]), WOCHEN_EINZELN)
+            schluessel = (1, n)
+            titel = ("Enden diese Woche" if n == 0 else "Enden nächste Woche" if n == 1
+                     else f"Enden später (nach {(montag + dt.timedelta(weeks=n) - dt.timedelta(days=1)):%d.%m.})"
+                     if n == WOCHEN_EINZELN else f"Enden in der Woche {spanne(n)}")
+        gruppen.setdefault(schluessel, (titel, []))[1].append(b)
+
+    teile = []
+    for i, schluessel in enumerate(sorted(gruppen)):
+        titel, liste = gruppen[schluessel]
+        liste.sort(key=lambda b: (b["bis"] if schluessel[0] else b["von"], b["adresse"]))
+        z = []
+        for b in liste:
+            osm = f"https://www.openstreetmap.org/?mlat={b['lat']:.5f}&mlon={b['lon']:.5f}#map=18/{b['lat']:.5f}/{b['lon']:.5f}"
+            zeit = f"{b['von']:%d.%m.} – {b['bis']:%d.%m.%Y}"
+            neu = ' <span class="etikett neu">neu</span>' if b["neu"] else ""
+            ort = f" ({e(b['ort'])})" if b["ort"] else ""
+            z.append(f'<li><span><a href="{osm}" title="Auf der Karte zeigen">{e(b["adresse"])}</a>{ort}{neu}</span>'
+                     f'<span>{e(b["art"])} · {zeit}</span></li>')
+        offen = " open" if i < 2 else ""
+        teile.append(f'<details{offen}><summary>{titel} ({len(liste)})</summary><ul class="liste mini spalten">{"".join(z)}</ul></details>')
+    if not teile:
+        return ""
+    return (f"<h3>Baustellen im Veedel ({len(bs)})</h3><p class=\"klein\">Genehmigte Arbeiten im Umkreis von {RADIUS_BAUSTELLEN_KM} km, "
+            f"die laufen oder in den nächsten {VORLAUF_BAUSTELLEN} Tagen beginnen – nach Woche sortiert. "
+            "Ein Klick auf die Adresse zeigt die Stelle auf OpenStreetMap.</p>" + "".join(teile))
 
 
 def alter(d):
@@ -668,7 +715,7 @@ CSS = """
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 a{color:var(--akzent)}
-.wrap{max-width:920px;margin:0 auto;padding:16px}
+.wrap{max-width:760px;margin:0 auto;padding:16px}
 header{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:8px;padding:8px 0 4px}
 header h1{font-size:1.5rem;margin:0}
 .stand,.klein,.quelle{color:var(--leise);font-size:.85rem}
@@ -690,7 +737,7 @@ section h3{font-size:1rem;margin:16px 0 6px;color:var(--leise)}
 .liste.termine .datum{min-width:120px;font-weight:600;color:var(--akzent);font-size:.9rem}
 .liste.termine li>div:last-child{display:flex;flex-direction:column}
 .zeiten{font-size:.85rem}
-.liste.spalten{columns:2 300px;column-gap:28px}
+.liste.spalten{columns:2 260px;column-gap:24px}
 .liste.spalten li{break-inside:avoid}
 .liste li.warn{background:var(--warn-hell);margin:0 -10px;padding:10px;border-radius:8px}
 .etikett{display:inline-block;font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.03em;color:var(--leise)}
@@ -698,6 +745,13 @@ li.warn .etikett{color:var(--warn)} li.sperr .etikett{color:var(--akzent)} .etik
 .leer{color:var(--leise);font-style:italic}
 .knopf{display:inline-block;background:var(--akzent);color:#fff;text-decoration:none;padding:8px 14px;border-radius:10px;font-weight:600}
 footer{color:var(--leise);font-size:.85rem;padding:10px 0 30px}
+.nach-oben{text-align:right;margin:4px 0 6px;font-size:.85rem}.nach-oben a{text-decoration:none}
+.liste.kompakt li{padding:7px 0;font-size:.92rem}
+.liste.mini li{padding:5px 0;font-size:.82rem;gap:0;line-height:1.35}
+.liste.mini li>span:last-child{color:var(--leise)}
+details{margin:4px 0 8px}
+summary{cursor:pointer;font-weight:600;font-size:.92rem;padding:6px 0;color:var(--text)}
+summary::marker{color:var(--akzent)}
 .karte-legende{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:.9rem;margin:6px 0 10px}
 .karte-legende label{display:flex;align-items:center;gap:6px;cursor:pointer}
 .punkt{display:inline-block;width:12px;height:12px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px #0003}
@@ -759,29 +813,27 @@ def main():
     karte_ok = versuche("Kartenbibliothek", leaflet_holen)
     sch = versuche("Schulen", schulen)
 
-    kopf = f"""<header><h1>{TITEL}</h1><span class="stand">Stand: {datum_de(HEUTE)}, {JETZT:%H:%M} Uhr</span></header>
+    kopf = f"""<header id="oben"><h1>{TITEL}</h1><span class="stand">Stand: {datum_de(HEUTE)}, {JETZT:%H:%M} Uhr</span></header>
 <div id="veraltet">⚠️ Diese Seite wurde seit mehreren Stunden nicht aktualisiert. Die Angaben können veraltet sein.</div>
 {wetter_html(w)}
-<nav><a href="#stadion">🏟️ Stadion</a><a href="#verkehr">🚗 Verkehr</a><a href="#baustellen">🚧 Baustellen</a><a href="#veedel">🎭 Karneval &amp; Vereine</a><a href="#meldungen">📰 Meldungen</a><a href="#schulen">🏫 Schulen</a></nav>"""
+<nav><a href="#stadion">🏟️ Stadion</a><a href="#veedel">🎭 Karneval &amp; Vereine</a><a href="#verkehr">🚗 Verkehr &amp; Baustellen</a><a href="#meldungen">📰 Meldungen</a><a href="#schulen">🏫 Schulen</a></nav>"""
 
     teile = [kopf, banner_html(termine or [])]
     teile.append(abschnitt("stadion", "Termine im RheinEnergieSTADION",
                            stadion_html(termine) if termine is not None else fehler_html("Der Stadion-Kalender"),
                            '<a href="https://www.rheinenergiestadion.de/termine">rheinenergiestadion.de</a>'))
-    teile.append(abschnitt("verkehr", "Verkehr", verkehr_html(vk or [], ab) if vk is not None else fehler_html("Der Verkehrskalender"),
-                           '<a href="https://www.stadt-koeln.de/leben-in-koeln/verkehr/verkehrskalender/">Verkehrskalender Stadt Köln</a>, '
-                           '<a href="https://verkehr.autobahn.de">Die Autobahn GmbH des Bundes</a>'))
-    teile.append(abschnitt("baustellen", "Baustellen im Veedel",
-                           ((karte_html(bs, ab) if karte_ok else "") + baustellen_html(bs)) if bs is not None
-                           else fehler_html("Das Baustellen-Verzeichnis"),
-                           '<a href="https://www.offenedaten-koeln.de/dataset/baustellen-koeln">Stadt Köln, Offene Daten</a> '
-                           '(Datenlizenz Deutschland – Namensnennung – Version 2.0), Die Autobahn GmbH des Bundes. '
-                           'Karte: © OpenStreetMap-Mitwirkende'))
     teile.append(abschnitt("veedel", "Karneval &amp; Vereine im Veedel",
                            karneval_html(kk) if kk is not None else fehler_html("Der Karnevalskalender"),
                            '<a href="https://koelnerkarneval.de/session/veranstaltungen">Sessionskalender Festkomitee Kölner Karneval</a>. '
                            f'Gezeigt werden kommende Termine der nächsten {MONATE_KARNEVAL} Monate, die Junkersdorf oder Müngersdorf betreffen.',
                            leer="Zurzeit keine Termine aus dem Veedel im Sessionskalender."))
+    teile.append(abschnitt("verkehr", "Verkehr in und ums Veedel",
+                           (karte_html(bs or [], ab) if karte_ok and bs is not None else "") + verkehr_html(vk, ab)
+                           + (baustellen_html(bs) if bs is not None else "<h3>Baustellen im Veedel</h3>" + fehler_html("Das Baustellen-Verzeichnis")),
+                           '<a href="https://www.stadt-koeln.de/leben-in-koeln/verkehr/verkehrskalender/">Verkehrskalender Stadt Köln</a>, '
+                           '<a href="https://www.offenedaten-koeln.de/dataset/baustellen-koeln">Stadt Köln, Offene Daten</a> '
+                           '(Datenlizenz Deutschland – Namensnennung – Version 2.0), '
+                           '<a href="https://verkehr.autobahn.de">Die Autobahn GmbH des Bundes</a>. Karte: © OpenStreetMap-Mitwirkende'))
     teile.append(abschnitt("meldungen", "Meldungen aus dem Veedel", meldungen_html(meldungen),
                            '<a href="https://www.presseportal.de/blaulicht/nr/12415">Polizei Köln (Presseportal)</a>, '
                            '<a href="https://www.stadt-koeln.de/politik-und-verwaltung/presseservice/">Presseservice Stadt Köln</a>. '
