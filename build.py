@@ -496,7 +496,9 @@ def stadion_html(termine):
             zeiten.append(f"Anwohnerschutz ab {t['anwohnerschutz']}")
         zeilen.append(f"""<li><div class="datum">{wann}</div><div><strong>{e(t['titel'])}</strong>
 <span class="klein">{e(t['untertitel'])}</span><span class="zeiten">{' · '.join(zeiten)}</span></div></li>""")
-    return f'<ul class="liste termine">{"".join(zeilen)}</ul><p><a class="knopf" href="stadion.ics">📅 Alle Termine als Kalender abonnieren</a></p>'
+    return (f'<ul class="liste termine">{"".join(zeilen)}</ul><p><a class="knopf" href="stadion.ics">📅 Alle Termine als Kalender abonnieren</a> '
+            f'<a class="knopf" href="{POLIZEI_X}" rel="noopener">🚓 Live-Hinweise der Polizei Köln (X)</a></p>'
+            '<p class="klein">Am Spieltag informiert die Polizei Köln auf X (Twitter) laufend über Sperrungen und Anreise.</p>')
 
 
 def verkehr_html(vk, ab):
@@ -528,6 +530,8 @@ def verkehr_html(vk, ab):
 
 
 STADION = (50.9335, 6.8750)
+POLIZEI_X = "https://x.com/polizei_nrw_k"
+GOOGLE_VERKEHR = f"https://www.google.com/maps/@{MITTE[0]},{MITTE[1]},14z/data=!5m1!1e1"
 LEAFLET = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/"
 
 
@@ -563,6 +567,8 @@ def karte_html(bs, ab):
     daten = json.dumps({"mitte": MITTE, "stadion": STADION, "punkte": punkte}, ensure_ascii=False).replace("</", "<\\/")
     zahl = {t: sum(p["typ"] == t for p in punkte) for t in ["aktuell", "endet", "bald", "autobahn"]}
     return f"""
+<p><a class="knopf" href="{GOOGLE_VERKEHR}" rel="noopener">🚦 Live-Verkehr ansehen (Google Maps)</a>
+<span class="klein">öffnet Google Maps mit Verkehrslage – Staus und zähfließender Verkehr in Echtzeit</span></p>
 <div class="karte-legende">
   <label><input type="checkbox" data-typ="aktuell" checked> <span class="punkt k-aktuell-bg"></span> Läuft gerade ({zahl['aktuell']})</label>
   <label><input type="checkbox" data-typ="endet" checked> <span class="punkt k-endet-bg"></span> Endet in den nächsten 7 Tagen ({zahl['endet']})</label>
