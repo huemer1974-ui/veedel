@@ -26,6 +26,7 @@ SEITE_URL = "https://www.huemer.org"
 MITTE = (50.935, 6.868)
 RADIUS_BAUSTELLEN_KM = 2.2
 RADIUS_AUTOBAHN_KM = 5.0
+VORLAUF_BAUSTELLEN = 60   # Tage: so weit im Voraus werden geplante Baustellen gezeigt
 
 # Meldungen gelten als "aus dem Veedel", wenn eines dieser Wörter vorkommt.
 STICHWORTE = [
@@ -259,7 +260,7 @@ def baustellen():
             if len(m) != 2:
                 continue
             von, bis = (dt.datetime.strptime(x, "%d-%m-%Y").date() for x in m)
-            if bis < HEUTE or von > HEUTE + dt.timedelta(days=14) or (bis - von).days > 730:
+            if bis < HEUTE or von > HEUTE + dt.timedelta(days=VORLAUF_BAUSTELLEN) or (bis - von).days > 730:
                 continue  # vorbei, noch weit weg oder Dauer-Genehmigung
             adresse = re.sub(r"\s+", " ", p.get("Adresse", "")).strip()
             ort = ""
@@ -301,7 +302,8 @@ def autobahn():
                 gesehen.add(schluessel)
                 out.append({"art": art, "titel": x["title"].strip(), "richtung": ort or x["subtitle"].strip(),
                             "zeit": kurz(zeitraum.group(1), 140) if zeitraum else "",
-                            "sperrung": art == "Sperrung" or x.get("isBlocked") == "true"})
+                            "sperrung": art == "Sperrung" or x.get("isBlocked") == "true",
+                            "lat": pos[0], "lon": pos[1]})
     reihenfolge = {"Verkehrsmeldung": 0, "Sperrung": 1, "Baustelle": 2}
     out.sort(key=lambda x: reihenfolge[x["art"]])
     return out
@@ -394,13 +396,18 @@ def wetter():
 
 def archiv_aktualisieren(neue):
     alt = json.loads(ARCHIV.read_text("utf-8")) if ARCHIV.exists() else []
+    if isinstance(alt, dict):
+        alt = alt.get("meldungen", [])
     nach_link = {m["link"]: m for m in alt}
     for m in neue:
         nach_link.setdefault(m["link"], m)
     grenze = (JETZT - dt.timedelta(days=TAGE_ARCHIV)).isoformat()
     liste = sorted((m for m in nach_link.values() if m["datum"] >= grenze), key=lambda m: m["datum"], reverse=True)
     ARCHIV.parent.mkdir(exist_ok=True)
-    ARCHIV.write_text(json.dumps(liste, ensure_ascii=False, indent=1), "utf-8")
+    # "lebenszeichen" ändert sich monatlich -> der Bot speichert mindestens einmal im Monat,
+    # und GitHub pausiert den Zeitplan nicht (Pause nach 60 Tagen ohne Aktivität).
+    ARCHIV.write_text(json.dumps({"lebenszeichen": f"{HEUTE:%Y-%m}", "meldungen": liste},
+                                 ensure_ascii=False, indent=1), "utf-8")
     return liste
 
 
@@ -510,6 +517,98 @@ def verkehr_html(vk, ab):
     return stadt + bahn
 
 
+STADION = (50.9335, 6.8750)
+LEAFLET = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/"
+
+
+def leaflet_holen():
+    """Kartenbibliothek einmal pro Lauf herunterladen und selbst ausliefern (kein Fremd-Skript im Browser)."""
+    ziel = AUSGABE / "leaflet"
+    ziel.mkdir(parents=True, exist_ok=True)
+    for name in ["leaflet.min.js", "leaflet.min.css"]:
+        (ziel / name).write_text(laden(LEAFLET + name), "utf-8")
+    return True
+
+
+def karte_html(bs, ab):
+    def dauer(von, bis):
+        if von > HEUTE:
+            t = (von - HEUTE).days
+            return f"beginnt {'morgen' if t == 1 else f'in {t} Tagen'} ({von:%d.%m.%Y})"
+        t = (bis - HEUTE).days
+        return "endet heute" if t == 0 else f"noch {t} {'Tag' if t == 1 else 'Tage'} (bis {bis:%d.%m.%Y})"
+
+    punkte = []
+    for b in bs:
+        typ = "bald" if b["von"] > HEUTE else "endet" if (b["bis"] - HEUTE).days <= 7 else "aktuell"
+        ort = f" ({b['ort']})" if b["ort"] else ""
+        punkte.append({"lat": round(b["lat"], 6), "lon": round(b["lon"], 6), "typ": typ,
+                       "html": f"<strong>{e(b['adresse'])}{e(ort)}</strong><br>{e(b['art'])}<br>"
+                               f"<span class='k-{typ}'>{'Demnächst' if typ == 'bald' else 'Läuft'}: {dauer(b['von'], b['bis'])}</span>"
+                               f"<br><small>Genehmigt {b['von']:%d.%m.%Y} – {b['bis']:%d.%m.%Y}</small>"})
+    for x in ab or []:
+        punkte.append({"lat": round(x["lat"], 6), "lon": round(x["lon"], 6), "typ": "autobahn",
+                       "html": f"<strong>{e(x['art'])}: {e(x['titel'])}</strong><br>{e(x['richtung'])}"
+                               f"<br><small>{e(x['zeit'])}</small>"})
+    daten = json.dumps({"mitte": MITTE, "stadion": STADION, "punkte": punkte}, ensure_ascii=False).replace("</", "<\\/")
+    zahl = {t: sum(p["typ"] == t for p in punkte) for t in ["aktuell", "endet", "bald", "autobahn"]}
+    return f"""
+<div class="karte-legende">
+  <label><input type="checkbox" data-typ="aktuell" checked> <span class="punkt k-aktuell-bg"></span> Läuft gerade ({zahl['aktuell']})</label>
+  <label><input type="checkbox" data-typ="endet" checked> <span class="punkt k-endet-bg"></span> Endet in den nächsten 7 Tagen ({zahl['endet']})</label>
+  <label><input type="checkbox" data-typ="bald" checked> <span class="punkt k-bald-bg"></span> Beginnt in den nächsten {VORLAUF_BAUSTELLEN} Tagen ({zahl['bald']})</label>
+  <label><input type="checkbox" data-typ="autobahn" checked> <span class="punkt k-autobahn-bg"></span> Autobahn A1/A4 ({zahl['autobahn']})</label>
+</div>
+<div id="karte-huelle">
+  <div id="karte"></div>
+  <div id="karte-hinweis"><p><strong>Karte anzeigen?</strong><br>Beim Laden werden Kartenbilder von OpenStreetMap abgerufen.
+  Dabei wird Ihre IP-Adresse an die OpenStreetMap Foundation übertragen (<a href="datenschutz.html">Datenschutz</a>).</p>
+  <button type="button" class="knopf" id="karte-laden">🗺️ Karte laden</button>
+  <label class="klein"><input type="checkbox" id="karte-merken"> Karte künftig automatisch laden</label></div>
+</div>
+<script>
+(function(){{
+var D={daten}, karte=null, gruppen={{}};
+var FARBE={{aktuell:"#d62839",endet:"#f08ca0",bald:"#e08a00",autobahn:"#6a3fc4"}};
+function merken(){{try{{return localStorage.getItem("karte-ok")==="1";}}catch(e){{return false;}}}}
+function zeigen(){{
+  document.getElementById("karte-hinweis").style.display="none";
+  var css=document.createElement("link");css.rel="stylesheet";css.href="leaflet/leaflet.min.css";document.head.appendChild(css);
+  var js=document.createElement("script");js.src="leaflet/leaflet.min.js";js.onload=bauen;document.head.appendChild(js);
+}}
+function bauen(){{
+  karte=L.map("karte",{{scrollWheelZoom:false}}).setView(D.mitte,14);
+  L.tileLayer("https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png",{{maxZoom:19,
+    attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>-Mitwirkende'}}).addTo(karte);
+  ["aktuell","endet","bald","autobahn"].forEach(function(t){{gruppen[t]=L.layerGroup().addTo(karte);}});
+  D.punkte.forEach(function(p){{
+    var m=p.typ==="autobahn"
+      ? L.circleMarker([p.lat,p.lon],{{radius:9,color:"#fff",weight:2,fillColor:FARBE[p.typ],fillOpacity:.95}})
+      : L.circleMarker([p.lat,p.lon],{{radius:7,color:"#fff",weight:1.5,fillColor:FARBE[p.typ],fillOpacity:.9}});
+    m.bindPopup(p.html).addTo(gruppen[p.typ]);
+  }});
+  L.marker(D.stadion,{{icon:L.divIcon({{className:"stadion-icon",html:"🏟️",iconSize:[26,26]}})}})
+    .bindPopup("<strong>RheinEnergieSTADION</strong>").addTo(karte);
+  var alle=D.punkte.filter(function(p){{return p.typ!=="autobahn";}}).map(function(p){{return [p.lat,p.lon];}});
+  if(alle.length) karte.fitBounds(alle,{{padding:[20,20],maxZoom:15}});
+  filtern();
+}}
+function filtern(){{
+  if(!karte) return;
+  document.querySelectorAll(".karte-legende input").forEach(function(c){{
+    var g=gruppen[c.dataset.typ]; if(c.checked) karte.addLayer(g); else karte.removeLayer(g);
+  }});
+}}
+document.querySelectorAll(".karte-legende input").forEach(function(c){{c.addEventListener("change",filtern);}});
+document.getElementById("karte-laden").addEventListener("click",function(){{
+  if(document.getElementById("karte-merken").checked){{try{{localStorage.setItem("karte-ok","1");}}catch(e){{}}}}
+  zeigen();
+}});
+if(merken()) zeigen();
+}})();
+</script>"""
+
+
 def baustellen_html(bs):
     z = []
     for b in bs[:40]:
@@ -520,7 +619,7 @@ def baustellen_html(bs):
         z.append(f"""<li><span><a href="{osm}" title="Auf der Karte zeigen">{e(b['adresse'])}</a>{ort}{neu}</span>
 <span class="klein">{e(b['art'])} · {status}</span></li>""")
     rest = f'<p class="klein">… und {len(bs) - 40} weitere.</p>' if len(bs) > 40 else ""
-    return f'<p class="klein">Genehmigte Arbeiten im Umkreis von {RADIUS_BAUSTELLEN_KM} km, sortiert nach Nähe zur Mitte des Veedels, die laufen oder in den nächsten 14 Tagen beginnen. Ein Klick auf die Adresse zeigt die Stelle auf der Karte.</p><ul class="liste spalten">{"".join(z)}</ul>{rest}' if z else ""
+    return f'<p class="klein">Genehmigte Arbeiten im Umkreis von {RADIUS_BAUSTELLEN_KM} km, sortiert nach Nähe zur Mitte des Veedels, die laufen oder in den nächsten {VORLAUF_BAUSTELLEN} Tagen beginnen. Ein Klick auf die Adresse zeigt die Stelle auf der Karte.</p><ul class="liste spalten">{"".join(z)}</ul>{rest}' if z else ""
 
 
 def alter(d):
@@ -599,6 +698,18 @@ li.warn .etikett{color:var(--warn)} li.sperr .etikett{color:var(--akzent)} .etik
 .leer{color:var(--leise);font-style:italic}
 .knopf{display:inline-block;background:var(--akzent);color:#fff;text-decoration:none;padding:8px 14px;border-radius:10px;font-weight:600}
 footer{color:var(--leise);font-size:.85rem;padding:10px 0 30px}
+.karte-legende{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:.9rem;margin:6px 0 10px}
+.karte-legende label{display:flex;align-items:center;gap:6px;cursor:pointer}
+.punkt{display:inline-block;width:12px;height:12px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px #0003}
+.k-aktuell-bg{background:#d62839}.k-endet-bg{background:#f08ca0}.k-bald-bg{background:#e08a00}.k-autobahn-bg{background:#6a3fc4}
+.k-aktuell,.k-endet{color:#d62839;font-weight:600}.k-bald{color:#b86e00;font-weight:600}
+#karte-huelle{position:relative;height:460px;border-radius:12px;overflow:hidden;border:1px solid var(--linie);margin-bottom:14px;background:var(--bg)}
+#karte{position:absolute;inset:0}
+#karte-hinweis{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;padding:20px;background:var(--bg)}
+#karte-hinweis p{max-width:460px;margin:0}
+.stadion-icon{font-size:22px;line-height:26px;text-align:center;background:none;border:0}
+.leaflet-popup-content{font:14px/1.45 system-ui,sans-serif;color:#1d1d1f}
+@media (max-width:560px){#karte-huelle{height:380px}}
 #veraltet{display:none;background:var(--warn-hell);color:var(--warn);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-weight:600}
 @media (max-width:560px){.liste.termine li{flex-direction:column;gap:2px}.wrap{padding:12px 16px}}
 """
@@ -644,6 +755,8 @@ def main():
            (versuche("Stadt", pressemeldungen, "stadt_presse", "Stadt Köln") or [])
     meldungen = archiv_aktualisieren(neue)
     kk = versuche("Karneval", karneval)
+    AUSGABE.mkdir(exist_ok=True)
+    karte_ok = versuche("Kartenbibliothek", leaflet_holen)
     sch = versuche("Schulen", schulen)
 
     kopf = f"""<header><h1>{TITEL}</h1><span class="stand">Stand: {datum_de(HEUTE)}, {JETZT:%H:%M} Uhr</span></header>
@@ -659,9 +772,11 @@ def main():
                            '<a href="https://www.stadt-koeln.de/leben-in-koeln/verkehr/verkehrskalender/">Verkehrskalender Stadt Köln</a>, '
                            '<a href="https://verkehr.autobahn.de">Die Autobahn GmbH des Bundes</a>'))
     teile.append(abschnitt("baustellen", "Baustellen im Veedel",
-                           baustellen_html(bs) if bs is not None else fehler_html("Das Baustellen-Verzeichnis"),
+                           ((karte_html(bs, ab) if karte_ok else "") + baustellen_html(bs)) if bs is not None
+                           else fehler_html("Das Baustellen-Verzeichnis"),
                            '<a href="https://www.offenedaten-koeln.de/dataset/baustellen-koeln">Stadt Köln, Offene Daten</a> '
-                           '(Datenlizenz Deutschland – Namensnennung – Version 2.0)'))
+                           '(Datenlizenz Deutschland – Namensnennung – Version 2.0), Die Autobahn GmbH des Bundes. '
+                           'Karte: © OpenStreetMap-Mitwirkende'))
     teile.append(abschnitt("veedel", "Karneval &amp; Vereine im Veedel",
                            karneval_html(kk) if kk is not None else fehler_html("Der Karnevalskalender"),
                            '<a href="https://koelnerkarneval.de/session/veranstaltungen">Sessionskalender Festkomitee Kölner Karneval</a>. '
@@ -685,10 +800,6 @@ def main():
         if quelle.exists():
             (AUSGABE / f"{name}.html").write_text(seite(name.capitalize() + " – " + TITEL, quelle.read_text("utf-8")), "utf-8")
     (AUSGABE / ".nojekyll").write_text("")
-    # Ändert sich einmal im Monat -> der Bot speichert etwas, und GitHub pausiert
-    # den Zeitplan nicht (Pause nach 60 Tagen ohne Aktivität im Repository).
-    (BASIS / "data").mkdir(exist_ok=True)
-    (BASIS / "data" / "lebenszeichen.txt").write_text(f"{HEUTE:%Y-%m}\n", "utf-8")
     print(f"OK: {len(termine or [])} Termine, {len(kk or [])} Karneval, {len(sch or [])} Schule, {len(vk or [])} Stadtverkehr, {len(ab or [])} Autobahn, "
           f"{len(bs or [])} Baustellen, {len(meldungen)} Meldungen")
 
