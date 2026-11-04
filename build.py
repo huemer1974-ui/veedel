@@ -765,7 +765,7 @@ def seite(titel, inhalt):
 <meta name="description" content="Automatisch aktualisierte Infos für Junkersdorf, Müngersdorf und rund ums RheinEnergieSTADION: Termine, Verkehr, Baustellen, Meldungen.">
 <style>{CSS}</style></head>
 <body><div class="wrap">{inhalt}
-<footer>Diese Seite wird stündlich automatisch aus öffentlichen Quellen zusammengestellt, ohne redaktionelle Prüfung und ohne Gewähr.
+<footer>Diese Seite wird alle 30 Minuten automatisch aus öffentlichen Quellen zusammengestellt, ohne redaktionelle Prüfung und ohne Gewähr.
 Maßgeblich sind immer die verlinkten Originalquellen. Keine Cookies, kein Tracking.<br>
 <a href="impressum.html">Impressum</a> · <a href="datenschutz.html">Datenschutz</a> · <a href="index.html">Startseite</a></footer>
 </div>
