@@ -571,18 +571,12 @@ def karte_html(bs, ab):
 </div>
 <div id="karte-huelle">
   <div id="karte"></div>
-  <div id="karte-hinweis"><p><strong>Karte anzeigen?</strong><br>Beim Laden werden Kartenbilder von OpenStreetMap abgerufen.
-  Dabei wird Ihre IP-Adresse an die OpenStreetMap Foundation übertragen (<a href="datenschutz.html">Datenschutz</a>).</p>
-  <button type="button" class="knopf" id="karte-laden">🗺️ Karte laden</button>
-  <label class="klein"><input type="checkbox" id="karte-merken"> Karte künftig automatisch laden</label></div>
 </div>
 <script>
 (function(){{
 var D={daten}, karte=null, gruppen={{}};
 var FARBE={{aktuell:"#d62839",endet:"#f08ca0",bald:"#e08a00",autobahn:"#6a3fc4"}};
-function merken(){{try{{return localStorage.getItem("karte-ok")==="1";}}catch(e){{return false;}}}}
 function zeigen(){{
-  document.getElementById("karte-hinweis").style.display="none";
   var css=document.createElement("link");css.rel="stylesheet";css.href="leaflet/leaflet.min.css";document.head.appendChild(css);
   var js=document.createElement("script");js.src="leaflet/leaflet.min.js";js.onload=bauen;document.head.appendChild(js);
 }}
@@ -610,11 +604,7 @@ function filtern(){{
   }});
 }}
 document.querySelectorAll(".karte-legende input").forEach(function(c){{c.addEventListener("change",filtern);}});
-document.getElementById("karte-laden").addEventListener("click",function(){{
-  if(document.getElementById("karte-merken").checked){{try{{localStorage.setItem("karte-ok","1");}}catch(e){{}}}}
-  zeigen();
-}});
-if(merken()) zeigen();
+zeigen();
 }})();
 </script>"""
 
@@ -759,8 +749,6 @@ summary::marker{color:var(--akzent)}
 .k-aktuell,.k-endet{color:#d62839;font-weight:600}.k-bald{color:#b86e00;font-weight:600}
 #karte-huelle{position:relative;height:460px;border-radius:12px;overflow:hidden;border:1px solid var(--linie);margin-bottom:14px;background:var(--bg)}
 #karte{position:absolute;inset:0}
-#karte-hinweis{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;padding:20px;background:var(--bg)}
-#karte-hinweis p{max-width:460px;margin:0}
 .stadion-icon{font-size:22px;line-height:26px;text-align:center;background:none;border:0}
 .leaflet-popup-content{font:14px/1.45 system-ui,sans-serif;color:#1d1d1f}
 @media (max-width:560px){#karte-huelle{height:380px}}
