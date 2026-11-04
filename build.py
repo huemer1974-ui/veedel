@@ -56,7 +56,26 @@ LINKS_VEEDEL = [
     ("GGS Alfons-Nowak-Straße, Junkersdorf", "https://www.alfons-nowak-strasse.de/"),
     ("Gymnasium Müngersdorf", "https://www.gymnasium-muengersdorf.de/"),
     ("Ildefons-Herwegen-Schule, Junkersdorf", "https://ildefons-herwegen-schule.de/"),
-    ("Ernst-Simons-Realschule, Müngersdorf", "https://www.ernst-simons-realschule.de/"),
+    ("Ernst-Simons-Gesamtschule, Müngersdorf", "https://www.ernst-simons-gesamtschule.de/"),
+]
+
+# Sport im Veedel
+HOHENLIND_ID = "00ES8GN91400003BVV0AG08LVUPGND5I"      # Vereins-ID bei fussball.de
+HOHENLIND_ERSTE = "SC Bor. Lindenthal-Hohenlind"        # so heißt die 1. Mannschaft dort
+HOHENLIND_URL = "https://www.fussball.de/verein/sc-bor-lindenthal-hohenlind-mittelrhein/-/id/" + HOHENLIND_ID
+WOCHEN_SPORT = 8          # so weit im Voraus werden Spiele und Termine gezeigt
+TAGE_VEREINE = 45         # Vereinsnachrichten erscheinen selten, daher länger sichtbar
+VEREIN_FEEDS = {
+    "FC Junkersdorf 1946": "https://www.fcjunkersdorf.de/feed/",
+}
+SPOHO_TERMINE = "https://www.dshs-koeln.de/universitaet/newsroom/termine-veranstaltungen"
+# Nur öffentlich interessante Spoho-Termine (keine Bewerbungs-, Karriere- oder Online-Veranstaltungen)
+SPOHO_JA = r"Campustag|Symposium|Sportbusiness|Talk|Konferenz|Kongress|Schwimm|Judo|Turnier|Meisterschaft|Wettkampf|Sportfest|Lauf|Tag der offenen|Fest|Thementag|Gala"
+SPOHO_NEIN = r"Online|TWA|Gründer|Start-?up|Schnupper|Studieninfo|Workshop|Bewerbung|Studieneinstieg"
+LINKS_SPORT = [
+    ("SC Borussia Lindenthal-Hohenlind (fussball.de)", HOHENLIND_URL),
+    ("FC Junkersdorf 1946", "https://www.fcjunkersdorf.de/"),
+    ("Deutsche Sporthochschule – alle Termine", SPOHO_TERMINE),
 ]
 MONATE = {m: i for i, m in enumerate(["januar", "februar", "märz", "april", "mai", "juni", "juli", "august",
                                        "september", "oktober", "november", "dezember"], 1)}
@@ -385,6 +404,63 @@ def schulen():
     return sorted(out, key=lambda m: m["datum"], reverse=True)
 
 
+def hohenlind():
+    """Heimspiele der 1. Mannschaft von Borussia Hohenlind (Westkampfbahn) aus dem Vereinsspielplan von fussball.de."""
+    bis = HEUTE + dt.timedelta(weeks=WOCHEN_SPORT)
+    s = laden(f"https://www.fussball.de/ajax.club.matchplan/-/id/{HOHENLIND_ID}/mime-type/HTML/mode/PAGE/"
+              f"show-filter/false/max/300/datum-von/{HEUTE}/datum-bis/{bis}/show-venues/true/offset/0")
+    out = []
+    for blk in s.split('<tr class="row-headline visible-small">')[1:]:
+        kopf = html.unescape(re.sub(r"<[^>]+>", "", blk.split("</tr>")[0])).strip()
+        m = re.match(r"\w+, (\d\d)\.(\d\d)\.(\d{4}) - (\d\d:\d\d) Uhr \| Herren \| (.+)$", kopf)
+        if not m:
+            continue
+        teams = [html.unescape(t).strip() for t in re.findall(r'<div class="club-name">\s*([^<]+?)\s*</div>', blk)]
+        if len(teams) < 2 or teams[0] != HOHENLIND_ERSTE:
+            continue                                   # nur Heimspiele der Ersten
+        info = re.search(r'class="info-text">([^<]+)', blk)
+        info = info.group(1).strip() if info else ""
+        if re.match(r"\d\d\.\d\d\.\d{4}", info):
+            continue                                   # alter Termin eines verlegten Spiels
+        ort = re.search(r'class="row-venue[^"]*">\s*<td></td>\s*<td colspan="3">\s*([^<]+?)\s*</td>', blk)
+        link = re.search(r'href="(https://www\.fussball\.de/spiel/[^"]+)"', blk)
+        out.append({"tag": dt.date(int(m.group(3)), int(m.group(2)), int(m.group(1))), "uhr": m.group(4),
+                    "liga": m.group(5), "gegner": teams[1], "ort": ort.group(1) if ort else "",
+                    "ausfall": info if info in ("Absetzung", "Ausfall", "Abbruch") else "",
+                    "link": link.group(1) if link else HOHENLIND_URL})
+    return out
+
+
+def spoho():
+    s = laden(SPOHO_TERMINE)
+    out = []
+    for b in s.split('<li class="row text-theme">')[1:]:
+        d = re.search(r'datetime="(\d{4}-\d\d-\d\d)T(\d\d:\d\d)', b)
+        t = re.search(r'<p class="fw-bold text-primary mb-0">([^<]+)', b)
+        l = re.search(r'href="(/universitaet/newsroom/termine-veranstaltungen/detail/[^"]+)"', b)
+        if not (d and t):
+            continue
+        titel = html.unescape(t.group(1)).strip()
+        tag = dt.date.fromisoformat(d.group(1))
+        if not re.search(SPOHO_JA, titel) or re.search(SPOHO_NEIN, titel):
+            continue
+        if not HEUTE <= tag <= HEUTE + dt.timedelta(weeks=WOCHEN_SPORT):
+            continue
+        out.append({"tag": tag, "uhr": d.group(2), "titel": titel,
+                    "link": "https://www.dshs-koeln.de" + l.group(1) if l else SPOHO_TERMINE})
+    return out[:8]
+
+
+def vereine():
+    out = []
+    for name, url in VEREIN_FEEDS.items():
+        for it in rss_items(laden(url))[:3]:
+            if it["datum"] and it["datum"].date() >= HEUTE - dt.timedelta(days=TAGE_VEREINE):
+                out.append({"quelle": name, "titel": it["titel"], "link": it["link"],
+                            "datum": it["datum"], "anriss": kurz(it["text"], 200)})
+    return sorted(out, key=lambda m: m["datum"], reverse=True)
+
+
 def wetter():
     d = json.loads(laden(QUELLEN["wetter"].format(lat=MITTE[0], lon=MITTE[1])))["weather"]
     return {"temp": d.get("temperature"), "icon": d.get("icon"), "wind": d.get("wind_speed_10"),
@@ -698,6 +774,47 @@ def schulen_html(liste):
     return neu + f'<h3>Schulen und Vereine im Veedel</h3><p class="klein">{links}</p>'
 
 
+def sport_html(hl, sp, ve):
+    def termine(liste, zeile):
+        return f'<ul class="liste termine">{"".join(map(zeile, liste))}</ul>'
+
+    def hl_zeile(x):
+        ort = "Westkampfbahn" if "Westkampfbahn" in x["ort"] else (x["ort"].split(",")[1].strip() if "," in x["ort"] else x["ort"])
+        aus = f' <span class="etikett">fällt aus</span>' if x["ausfall"] else ""
+        return (f'<li><div class="datum">{datum_de(x["tag"])}</div><div><a href="{e(x["link"])}"><strong>'
+                f'Borussia Hohenlind – {e(x["gegner"])}</strong></a>{aus}<span class="klein">{e(x["liga"])} · {x["uhr"]} Uhr'
+                f'{" · " + e(ort) if ort else ""}</span></div></li>')
+
+    def sp_zeile(x):
+        return (f'<li><div class="datum">{datum_de(x["tag"])}</div><div><a href="{e(x["link"])}"><strong>{e(x["titel"])}</strong></a>'
+                f'<span class="klein">{x["uhr"]} Uhr</span></div></li>')
+
+    t = "<h3>Borussia Hohenlind – Heimspiele der 1. Mannschaft</h3>"
+    if hl is None:
+        t += fehler_html("Der Spielplan von fussball.de")
+    else:
+        t += termine(hl, hl_zeile) if hl else f'<p class="leer klein">In den nächsten {WOCHEN_SPORT} Wochen kein Heimspiel angesetzt.</p>'
+    t += "<h3>Deutsche Sporthochschule</h3>"
+    if sp is None:
+        t += fehler_html("Der Terminkalender der Sporthochschule")
+    else:
+        t += termine(sp, sp_zeile) if sp else '<p class="leer klein">Zurzeit keine öffentlichen Veranstaltungen angekündigt.</p>'
+    t += "<h3>Aus den Vereinen</h3>"
+    if ve is None:
+        t += fehler_html("Der Nachrichten-Feed des FC Junkersdorf")
+    elif ve:
+        z = []
+        for m in ve:
+            anriss = f"<span>{e(m['anriss'])}</span>" if m["anriss"] else ""
+            z.append(f'<li><div class="klein">{datum_de(m["datum"].date())} ({alter(m["datum"].date())}) · {e(m["quelle"])}</div>'
+                     f'<a href="{e(m["link"])}"><strong>{e(m["titel"])}</strong></a>{anriss}</li>')
+        t += f'<ul class="liste">{"".join(z)}</ul>'
+    else:
+        t += f'<p class="leer klein">In den letzten {TAGE_VEREINE} Tagen keine neuen Beiträge.</p>'
+    links = " · ".join(f'<a href="{e(u)}">{e(n)}</a>' for n, u in LINKS_SPORT)
+    return t + f'<p class="klein">{links}</p>'
+
+
 def wetter_html(w):
     if not w or w["temp"] is None:
         return ""
@@ -806,21 +923,28 @@ def main():
     AUSGABE.mkdir(exist_ok=True)
     karte_ok = versuche("Kartenbibliothek", leaflet_holen)
     sch = versuche("Schulen", schulen)
+    hl = versuche("Hohenlind", hohenlind)
+    sp = versuche("Sporthochschule", spoho)
+    ve = versuche("Vereine", vereine)
 
     kopf = f"""<header id="oben"><h1>{TITEL}</h1><span class="stand">Stand: {datum_de(HEUTE)}, {JETZT:%H:%M} Uhr</span></header>
 <div id="veraltet">⚠️ Diese Seite wurde seit mehreren Stunden nicht aktualisiert. Die Angaben können veraltet sein.</div>
 {wetter_html(w)}
-<nav><a href="#stadion">🏟️ Stadion</a><a href="#veedel">🎭 Karneval &amp; Vereine</a><a href="#verkehr">🚗 Verkehr &amp; Baustellen</a><a href="#meldungen">📰 Meldungen</a><a href="#schulen">🏫 Schulen</a></nav>"""
+<nav><a href="#stadion">🏟️ Stadion</a><a href="#veedel">🎭 Karneval</a><a href="#sport">⚽ Sport</a><a href="#verkehr">🚗 Verkehr &amp; Baustellen</a><a href="#meldungen">📰 Meldungen</a><a href="#schulen">🏫 Schulen</a></nav>"""
 
     teile = [kopf, banner_html(termine or [])]
     teile.append(abschnitt("stadion", "Termine im RheinEnergieSTADION",
                            stadion_html(termine) if termine is not None else fehler_html("Der Stadion-Kalender"),
                            '<a href="https://www.rheinenergiestadion.de/termine">rheinenergiestadion.de</a>'))
-    teile.append(abschnitt("veedel", "Karneval &amp; Vereine im Veedel",
+    teile.append(abschnitt("veedel", "Karneval im Veedel",
                            karneval_html(kk) if kk is not None else fehler_html("Der Karnevalskalender"),
                            '<a href="https://koelnerkarneval.de/session/veranstaltungen">Sessionskalender Festkomitee Kölner Karneval</a>. '
                            f'Gezeigt werden kommende Termine der nächsten {MONATE_KARNEVAL} Monate, die Junkersdorf oder Müngersdorf betreffen.',
                            leer="Zurzeit keine Termine aus dem Veedel im Sessionskalender."))
+    teile.append(abschnitt("sport", "Sport im Veedel", sport_html(hl, sp, ve),
+                           f'<a href="{HOHENLIND_URL}">fussball.de</a> (Spielplan), '
+                           f'<a href="{SPOHO_TERMINE}">Deutsche Sporthochschule Köln</a>, Nachrichten-Feed des FC Junkersdorf. '
+                           f'Gezeigt werden die nächsten {WOCHEN_SPORT} Wochen.'))
     teile.append(abschnitt("verkehr", "Verkehr in und ums Veedel",
                            (karte_html(bs or [], ab) if karte_ok and bs is not None else "") + verkehr_html(vk, ab)
                            + (baustellen_html(bs) if bs is not None else "<h3>Baustellen im Veedel</h3>" + fehler_html("Das Baustellen-Verzeichnis")),
