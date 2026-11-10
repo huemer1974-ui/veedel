@@ -3,6 +3,18 @@
  "meldungen": [
   {
    "quelle": "Stadt Köln",
+   "titel": "Sportliche Termine der Woche",
+   "link": "https://www.stadt-koeln.de/politik-und-verwaltung/presseservice/sportliche-termine-der-woche-18",
+   "datum": "2026-11-10T14:47:00+01:00",
+   "anriss": "Am Samstag, 14. November, ab 13.30 Uhr , wird Köln zum Schauplatz für Rugby auf internationalem Niveau . Die deutsche 15er-Nationalmannschaft, die \"Schwarzen Adler“, empfängt im Stadion des ASV Köln im Sportpark Müngersdorf die Auswahl aus Dänemark.",
+   "treffer": [
+    "Müngersdorf",
+    "Sportpark",
+    "Stadion"
+   ]
+  },
+  {
+   "quelle": "Stadt Köln",
    "titel": "10. Politisches Begleitgremium und Fachgespräch zur Ost-West-Achse",
    "link": "https://www.stadt-koeln.de/politik-und-verwaltung/presseservice/10-politisches-begleitgremium-und-fachgespraech-zur-ost-west-achse",
    "datum": "2026-11-04T15:18:00+01:00",
