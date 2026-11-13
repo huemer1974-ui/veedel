@@ -3,6 +3,16 @@
  "meldungen": [
   {
    "quelle": "Stadt Köln",
+   "titel": "Baustellen in den Stadtteilen",
+   "link": "https://www.stadt-koeln.de/politik-und-verwaltung/presseservice/baustellen-den-stadtteilen-137",
+   "datum": "2026-11-13T13:34:00+01:00",
+   "anriss": "Die Stadt Köln beginnt ab Montag, 18. Januar 2027 , mit Instandsetzungsarbeiten an der Straßenbrücke Gleueler Straße, die über den Kanal des Decksteiner Weihers führt. Im Bereich des Widerlagers wird zunächst ein temporärer Damm in den See eingebaut, um den …",
+   "treffer": [
+    "Militärringstraße"
+   ]
+  },
+  {
+   "quelle": "Stadt Köln",
    "titel": "Sportliche Termine der Woche",
    "link": "https://www.stadt-koeln.de/politik-und-verwaltung/presseservice/sportliche-termine-der-woche-18",
    "datum": "2026-11-10T14:47:00+01:00",
